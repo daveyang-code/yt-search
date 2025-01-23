@@ -8,8 +8,12 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 
 # Function to load liked videos from a JSON file
 def load_liked_videos(file_path):
-    with open(file_path, "r") as file:
-        return json.load(file)
+    try:
+        with open(file_path, "r") as file:
+            return json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        st.error("Error loading the JSON file. Please check the file path or content.")
+        st.stop()
 
 
 # Function to format duration in seconds to H:M:S
@@ -74,170 +78,184 @@ liked_videos = load_liked_videos("liked.json")
 # Extract relevant data into a DataFrame
 video_data = [
     {
-        "title": video_info["video_data"]["snippet"]["title"],
-        "id": video_info["video_data"]["id"],
+        "title": video_info["video_data"]["snippet"].get("title", "Unknown"),
+        "id": video_info["video_data"].get("id", "Unknown"),
         "duration": format_duration(
-            parse_duration(video_info["video_data"]["contentDetails"]["duration"])
+            parse_duration(
+                video_info["video_data"]["contentDetails"].get("duration", "PT0S")
+            )
         ),
-        "channel": video_info["video_data"]["snippet"]["channelTitle"],
+        "channel": video_info["video_data"]["snippet"].get("channelTitle", "Unknown"),
         "publishedAt": pd.to_datetime(
-            video_info["video_data"]["snippet"]["publishedAt"]
+            video_info["video_data"]["snippet"].get("publishedAt", None)
         ),
-        "likedAt": pd.to_datetime(video_info["playlist_data"]["publishedAt"]),
+        "likedAt": pd.to_datetime(video_info["playlist_data"].get("publishedAt", None)),
     }
     for video_info in liked_videos.values()
     if "video_data" in video_info
 ]
 df = pd.DataFrame(video_data)
 
-# Search for video titles or channels
-search_query = st.text_input("Search for video titles or channels")
-if search_query:
-    df = df[
-        df["title"].str.contains(search_query, case=False, na=False)
-        | df["channel"].str.contains(search_query, case=False, na=False)
+# Filter videos based on published date range
+if not df.empty:
+    min_date, max_date = st.slider(
+        "Date Video Published by Channel",
+        min_value=df["publishedAt"].min().date(),
+        max_value=df["publishedAt"].max().date(),
+        value=(df["publishedAt"].min().date(), df["publishedAt"].max().date()),
+        format="YYYY-MM-DD",
+    )
+    df_filtered = df[
+        (df["publishedAt"].dt.date >= min_date)
+        & (df["publishedAt"].dt.date <= max_date)
     ]
 
-# Filter by selected channel
-selected_channel = st.selectbox(
-    "Select a channel to filter",
-    options=["All"] + sorted(df["channel"].unique().tolist()),
-)
-if selected_channel != "All":
-    df = df[df["channel"] == selected_channel]
+    # Filter videos based on liked date range
+    min_liked_date, max_liked_date = st.slider(
+        "Date Video Added to Liked Videos",
+        min_value=df["likedAt"].min().date(),
+        max_value=df["likedAt"].max().date(),
+        value=(df["likedAt"].min().date(), df["likedAt"].max().date()),
+        format="YYYY-MM-DD",
+    )
+    df_filtered = df_filtered[
+        (df_filtered["likedAt"].dt.date >= min_liked_date)
+        & (df_filtered["likedAt"].dt.date <= max_liked_date)
+    ]
 
-# Filter videos based on published date range
-min_date, max_date = st.slider(
-    "Date Video Published by Channel",
-    min_value=df["publishedAt"].min().date(),
-    max_value=df["publishedAt"].max().date(),
-    value=(df["publishedAt"].min().date(), df["publishedAt"].max().date()),
-    format="YYYY-MM-DD",
-)
-df_filtered = df[
-    (df["publishedAt"].dt.date >= min_date) & (df["publishedAt"].dt.date <= max_date)
-]
+    # Search for video titles or channels
+    search_query = st.text_input("Search for video titles or channels")
+    if search_query:
+        df_filtered = df_filtered[
+            df_filtered["title"].str.contains(search_query, case=False, na=False)
+            | df_filtered["channel"].str.contains(search_query, case=False, na=False)
+        ]
 
-# Filter videos based on liked date range
-min_liked_date, max_liked_date = st.slider(
-    "Date Video Added to Liked Videos",
-    min_value=df["likedAt"].min().date(),
-    max_value=df["likedAt"].max().date(),
-    value=(df["likedAt"].min().date(), df["likedAt"].max().date()),
-    format="YYYY-MM-DD",
-)
-df_filtered = df_filtered[
-    (df_filtered["likedAt"].dt.date >= min_liked_date)
-    & (df_filtered["likedAt"].dt.date <= max_liked_date)
-]
+    # Filter by selected channel
+    selected_channel = st.selectbox(
+        "Select a channel to filter",
+        options=["All"] + sorted(df_filtered["channel"].unique().tolist()),
+    )
+    if selected_channel != "All":
+        df_filtered = df_filtered[df_filtered["channel"] == selected_channel]
 
-# Display total number of videos
-data = {
-    "": ["Total number of videos", "Number of videos in the selected date range"],
-    "videos": [len(df), len(df_filtered)],
-}
+    # Check if the filtered DataFrame is empty
+    if df_filtered.empty:
+        st.warning("No videos match the current filters.")
+        st.stop()
 
-df_display = pd.DataFrame(data)
-st.table(df_display)
+    # Display total number of videos
+    data = {
+        "": ["Total number of videos", "Number of videos in the selected date range"],
+        "videos": [len(df), len(df_filtered)],
+    }
 
-# Display filtered videos
-st.dataframe(df_filtered)
+    df_display = pd.DataFrame(data)
+    st.table(df_display)
 
-# Channel video count visualization
-channel_video_count = df_filtered["channel"].value_counts().reset_index()
-channel_video_count.columns = ["channel", "video_count"]
-fig = px.bar(
-    channel_video_count.head(10),
-    x="channel",
-    y="video_count",
-    title="Top 10 Channels by Video Count",
-)
-st.plotly_chart(fig)
+    # Display filtered videos
+    st.dataframe(df_filtered)
 
-# Extract and count categories from filtered videos
-categories = [
-    video_info["video_data"]["snippet"]["categoryId"]
-    for video_info in liked_videos.values()
-    if "video_data" in video_info
-    and "categoryId" in video_info["video_data"]["snippet"]
-    and video_info["video_data"]["id"] in df_filtered["id"].values
-]
-category_counts = pd.Series(categories).value_counts().reset_index(name="count")
-category_counts.columns = ["category", "count"]
-category_counts["category"] = (
-    category_counts["category"].astype(int).map(category_names)
-)
+    # Channel video count visualization
+    channel_video_count = df_filtered["channel"].value_counts().reset_index()
+    channel_video_count.columns = ["channel", "video_count"]
+    fig = px.bar(
+        channel_video_count.head(10),
+        x="channel",
+        y="video_count",
+        title="Top 10 Channels by Video Count",
+    )
+    st.plotly_chart(fig)
 
-# Category count visualization
-fig = px.bar(category_counts, x="category", y="count", title="Most Popular Categories")
-st.plotly_chart(fig)
+    # Extract and count categories from filtered videos
+    categories = [
+        video_info["video_data"]["snippet"].get("categoryId")
+        for video_info in liked_videos.values()
+        if "video_data" in video_info
+        and video_info["video_data"].get("id") in df_filtered["id"].values
+    ]
+    categories = [c for c in categories if c is not None]
+    category_counts = pd.Series(categories).value_counts().reset_index(name="count")
+    category_counts.columns = ["category", "count"]
+    category_counts["category"] = (
+        category_counts["category"].astype(int).map(category_names)
+    )
 
-# Video durations distribution visualization
-durations = [
-    parse_duration(video_info["video_data"]["contentDetails"]["duration"])
-    for video_info in liked_videos.values()
-    if "video_data" in video_info
-    and "contentDetails" in video_info["video_data"]
-    and video_info["video_data"]["id"] in df_filtered["id"].values
-]
-duration_df = pd.DataFrame(durations, columns=["duration"])
-upper_limit = duration_df["duration"].quantile(1)
-filtered_duration_df = duration_df[duration_df["duration"] <= upper_limit]
-bin_edges = list(range(0, 300, 30)) + list(range(300, int(upper_limit) + 300, 300))
+    # Category count visualization
+    fig = px.bar(
+        category_counts, x="category", y="count", title="Most Popular Categories"
+    )
+    st.plotly_chart(fig)
 
-fig = px.histogram(
-    filtered_duration_df,
-    x="duration",
-    title="Distribution of Video Durations",
-    log_y=True,
-    nbins=len(bin_edges) - 1,
-)
-fig.update_traces(xbins=dict(start=0, end=upper_limit, size=30))
-st.plotly_chart(fig)
+    # Video durations distribution visualization
+    durations = [
+        parse_duration(
+            video_info["video_data"]["contentDetails"].get("duration", "PT0S")
+        )
+        for video_info in liked_videos.values()
+        if "video_data" in video_info
+        and video_info["video_data"].get("id") in df_filtered["id"].values
+    ]
+    duration_df = pd.DataFrame(durations, columns=["duration"])
+    upper_limit = duration_df["duration"].quantile(1)
+    filtered_duration_df = duration_df[duration_df["duration"] <= upper_limit]
 
-# Duration statistics
-min_duration, max_duration, avg_duration = (
-    filtered_duration_df["duration"].min(),
-    filtered_duration_df["duration"].max(),
-    filtered_duration_df["duration"].mean(),
-)
-duration_stats = {
-    "Statistic": ["Min", "Max", "Mean", "Median", "Mode"],
-    "Duration": [
-        format_duration(min_duration),
-        format_duration(max_duration),
-        format_duration(avg_duration),
-        format_duration(filtered_duration_df["duration"].median()),
-        format_duration(filtered_duration_df["duration"].mode().values[0]),
-    ],
-}
-st.table(pd.DataFrame(duration_stats))
+    fig = px.histogram(
+        filtered_duration_df,
+        x="duration",
+        title="Distribution of Video Durations",
+        log_y=True,
+        nbins=30,
+    )
+    st.plotly_chart(fig)
 
-# Extract and count tags from filtered videos
-tags = [
-    tag
-    for video_info in liked_videos.values()
-    if "video_data" in video_info and "tags" in video_info["video_data"]["snippet"]
-    for tag in video_info["video_data"]["snippet"]["tags"]
-    if video_info["video_data"]["id"] in df_filtered["id"].values
-]
-tag_counts = pd.Series(tags).value_counts().reset_index(name="count")
-tag_counts.columns = ["tag", "count"]
-fig = px.bar(tag_counts.head(10), x="tag", y="count", title="Top 10 Most Popular Tags")
-st.plotly_chart(fig)
+    # Duration statistics
+    min_duration, max_duration, avg_duration = (
+        filtered_duration_df["duration"].min(),
+        filtered_duration_df["duration"].max(),
+        filtered_duration_df["duration"].mean(),
+    )
+    duration_stats = {
+        "Statistic": ["Min", "Max", "Mean", "Median", "Mode"],
+        "Duration": [
+            format_duration(min_duration),
+            format_duration(max_duration),
+            format_duration(avg_duration),
+            format_duration(filtered_duration_df["duration"].median()),
+            format_duration(filtered_duration_df["duration"].mode().values[0]),
+        ],
+    }
+    st.table(pd.DataFrame(duration_stats))
 
-# TF-IDF analysis for video titles
-video_titles = [
-    video_info["video_data"]["snippet"]["title"]
-    for video_info in liked_videos.values()
-    if "video_data" in video_info
-    and video_info["video_data"]["id"] in df_filtered["id"].values
-]
-vectorizer = TfidfVectorizer(stop_words="english")
-tfidf_matrix = vectorizer.fit_transform(video_titles)
-tfidf_scores = tfidf_matrix.sum(axis=0).A1
-tfidf_df = pd.DataFrame(
-    {"word": vectorizer.get_feature_names_out(), "score": tfidf_scores}
-).sort_values(by="score", ascending=False)
-st.write("**Top 10 Words by TF-IDF Score:**")
-st.dataframe(tfidf_df.head(10).reset_index(drop=True), width=800)
+    # Extract and count tags from filtered videos
+    tags = [
+        tag
+        for video_info in liked_videos.values()
+        if "video_data" in video_info and "tags" in video_info["video_data"]["snippet"]
+        for tag in video_info["video_data"]["snippet"].get("tags", [])
+        if video_info["video_data"].get("id") in df_filtered["id"].values
+    ]
+    tag_counts = pd.Series(tags).value_counts().reset_index(name="count")
+    tag_counts.columns = ["tag", "count"]
+    fig = px.bar(
+        tag_counts.head(10), x="tag", y="count", title="Top 10 Most Popular Tags"
+    )
+    st.plotly_chart(fig)
+
+    # TF-IDF analysis for video titles
+    video_titles = [
+        video_info["video_data"]["snippet"].get("title", "")
+        for video_info in liked_videos.values()
+        if "video_data" in video_info
+        and video_info["video_data"].get("id") in df_filtered["id"].values
+    ]
+    vectorizer = TfidfVectorizer(stop_words="english")
+    tfidf_matrix = vectorizer.fit_transform(video_titles)
+    tfidf_scores = tfidf_matrix.sum(axis=0).A1
+    tfidf_df = pd.DataFrame(
+        {"word": vectorizer.get_feature_names_out(), "score": tfidf_scores}
+    ).sort_values(by="score", ascending=False)
+    st.write("**Top 10 Words by TF-IDF Score:**")
+    st.dataframe(tfidf_df.head(10).reset_index(drop=True), width=800)
+else:
+    st.warning("The dataset is empty or invalid.")
